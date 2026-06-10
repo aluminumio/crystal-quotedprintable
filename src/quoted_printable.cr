@@ -107,21 +107,20 @@ module QuotedPrintable
   private def from_quoted_printable(data : String)
     chars = Char::Reader.new(data)
     char = chars.current_char
-    i = 0
     until char == '\0'
-      char_type = type_of(char)
-      case char_type
+      case type_of(char)
       when CharType::PRINTABLE, CharType::WHITE_SPACE, CharType::CR, CharType::LF
         yield char.ord.to_u8
-        i += 1
       when CharType::EQUAL
-        bstr = "#{chars.next_char}#{chars.next_char}"
-        unless bstr == "\r\n"
-          if bstr =~ /\A[0-9A-fa-f]{2}\z/
-            yield bstr.to_u8(16)
-            i += 1
+        c1 = chars.next_char
+        c2 = chars.next_char
+        unless c1 == '\r' && c2 == '\n' # soft line break: emit nothing
+          hi = c1.to_i?(16)
+          lo = c2.to_i?(16)
+          if hi && lo
+            yield ((hi << 4) | lo).to_u8
           else
-            raise InvalidEncodedData.new("=" + bstr)
+            raise InvalidEncodedData.new("=#{c1}#{c2}")
           end
         end
       else
@@ -139,10 +138,13 @@ module QuotedPrintable
     string
   end
 
+  # Upper bound on the decoded size: quoted-printable decoding never
+  # expands its input, and the caller trims the result to the bytes
+  # actually produced. Computing the exact size previously required two
+  # full-body regex scans, which dominated decode cost on escape-heavy
+  # bodies.
   private def decode_size(string : String)
-    soft_line_breaks = string.scan(/=\r\n/).size
-    encoded_bytes = string.scan(/=[0-9A-F]{2}/).size
-    string.bytesize - soft_line_breaks * 3 - encoded_bytes * 2
+    string.bytesize
   end
 
   private def type_of(char) : CharType
